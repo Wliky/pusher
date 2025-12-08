@@ -1,0 +1,58 @@
+# ==============================================================================
+# 可复用 TG 推送模板（单独调用）
+# 外部仓库调用时仅需传入 title + content，无需关心底层配置
+# ==============================================================================
+name: Reusable Notify - Telegram
+
+# 标记为可复用工作流（核心：workflow_call）
+on:
+  workflow_call:
+    # 定义外部传入参数（标题+内容，必填）
+    inputs:
+      notify_title:
+        description: '推送标题'
+        required: true
+        type: string
+      notify_content:
+        description: '推送内容（支持Markdown）'
+        required: true
+        type: string
+    # 定义外部需传递的Secrets（仅PAT_TOKEN，可选）
+    secrets:
+      PAT_TOKEN:
+        required: false
+
+# 最小权限配置
+permissions:
+  contents: read  # 仅读取权限，无需写入
+
+jobs:
+  send-telegram-notify:
+    name: Send Notification to Telegram
+    runs-on: ubuntu-latest
+    env:
+      # 从仓库全局Secrets读取TG配置（无需外部传递）
+      TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+      TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+    steps:
+      - name: Send TG Message
+        # 仅当配置了TG密钥时执行
+        if: ${{ env.TG_BOT_TOKEN != '' && env.TG_CHAT_ID != '' }}
+        run: |
+          # 调用TG Bot API发送Markdown格式消息
+          curl -X POST "https://api.telegram.org/bot${{ env.TG_BOT_TOKEN }}/sendMessage" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "chat_id": "${{ env.TG_CHAT_ID }}",
+            "text": "*${{ inputs.notify_title }}*\n\n${{ inputs.notify_content }}",
+            "parse_mode": "Markdown",          # 启用Markdown格式
+            "disable_web_page_preview": true   # 禁用链接预览
+          }'
+          
+          # 检查推送结果
+          if [ $? -eq 0 ]; then
+            echo "✅ TG推送成功"
+          else
+            echo "❌ TG推送失败，请检查密钥配置"
+            exit 1
+          fi
