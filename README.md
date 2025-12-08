@@ -1,2 +1,5 @@
 # pusher
-GitHub全局推送配置
+├── .github/
+│   └── workflows/
+│       ├── notify-telegram.yml   # TG推送模板
+└── README.md                     # 使用说明
