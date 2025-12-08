@@ -1,58 +1,64 @@
 # ==============================================================================
-# 可复用 TG 推送模板（单独调用）
-# 外部仓库调用时仅需传入 title + content，无需关心底层配置
+# 【独立可复用】TG消息推送模板（跨仓库调用专用）
+# 作用：所有需要TG通知的仓库可直接调用此模板，无需重复编写推送逻辑
+# 适用：GitHub Actions 可复用工作流（workflow_call）
 # ==============================================================================
 name: Reusable Notify - Telegram
 
-# 标记为可复用工作流（核心：workflow_call）
+# 定义为可复用工作流，允许其他仓库跨仓库调用
 on:
   workflow_call:
-    # 定义外部传入参数（标题+内容，必填）
+    # 【外部调用时必须传入的参数】标题+内容（支持Markdown）
     inputs:
       notify_title:
-        description: '推送标题'
-        required: true
+        description: 'TG推送消息的标题（会自动加粗）'
+        required: true  # 必填项，调用时必须传值
         type: string
       notify_content:
-        description: '推送内容（支持Markdown）'
-        required: true
+        description: 'TG推送消息的正文（支持TG的Markdown子集）'
+        required: true  # 必填项，调用时必须传值
         type: string
-    # 定义外部需传递的Secrets（仅PAT_TOKEN，可选）
+    # 【外部调用时需要传递的密钥】TG机器人配置（模板仓库无需存储，由调用方传递）
     secrets:
+      TG_BOT_TOKEN:
+        description: 'TG机器人的唯一标识（从@BotFather获取）'
+        required: true  # 必填密钥，调用方需从自己仓库的Secrets传递
+      TG_CHAT_ID:
+        description: '接收消息的TG聊天ID（个人/群组ID，从@userinfobot获取）'
+        required: true  # 必填密钥，调用方需从自己仓库的Secrets传递
       PAT_TOKEN:
-        required: false
+        description: '仅私有模板仓库需要，用于拉取模板（公开仓库可留空）'
+        required: false # 可选，非必需
 
-# 最小权限配置
+# 【最小权限原则】仅授予读取权限，避免权限过大
 permissions:
-  contents: read  # 仅读取权限，无需写入
+  contents: read  # 仅读取仓库内容，无写入/修改权限
 
 jobs:
+  # 唯一任务：发送TG消息
   send-telegram-notify:
     name: Send Notification to Telegram
-    runs-on: ubuntu-latest
-    env:
-      # 从仓库全局Secrets读取TG配置（无需外部传递）
-      TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-      TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+    runs-on: ubuntu-latest  # 使用Ubuntu最新版运行环境
     steps:
+      # 步骤1：调用TG Bot API发送Markdown格式消息
       - name: Send TG Message
-        # 仅当配置了TG密钥时执行
-        if: ${{ env.TG_BOT_TOKEN != '' && env.TG_CHAT_ID != '' }}
+        # 前置判断：仅当密钥都配置时才执行推送（避免空值报错）
+        if: ${{ secrets.TG_BOT_TOKEN != '' && secrets.TG_CHAT_ID != '' }}
         run: |
-          # 调用TG Bot API发送Markdown格式消息
-          curl -X POST "https://api.telegram.org/bot${{ env.TG_BOT_TOKEN }}/sendMessage" \
-          -H "Content-Type: application/json" \
+          # 调用TG官方API，POST请求发送消息
+          curl -X POST "https://api.telegram.org/bot${{ secrets.TG_BOT_TOKEN }}/sendMessage" \
+          -H "Content-Type: application/json" \  # 指定请求体为JSON格式
           -d '{
-            "chat_id": "${{ env.TG_CHAT_ID }}",
-            "text": "*${{ inputs.notify_title }}*\n\n${{ inputs.notify_content }}",
-            "parse_mode": "Markdown",          # 启用Markdown格式
-            "disable_web_page_preview": true   # 禁用链接预览
+            "chat_id": "${{ secrets.TG_CHAT_ID }}",  # 接收消息的聊天ID
+            "text": "*${{ inputs.notify_title }}*\n\n${{ inputs.notify_content }}",  # 消息内容（标题加粗+换行分隔正文）
+            "parse_mode": "Markdown",  # 启用TG的Markdown格式（支持*加粗*、[链接]()等）
+            "disable_web_page_preview": true  # 禁用链接的网页预览（避免消息杂乱）
           }'
           
-          # 检查推送结果
-          if [ $? -eq 0 ]; then
+          # 步骤2：检查推送结果，输出日志并处理错误
+          if [ $? -eq 0 ]; then  # $? 是上一条命令的执行状态（0=成功，非0=失败）
             echo "✅ TG推送成功"
           else
-            echo "❌ TG推送失败，请检查密钥配置"
-            exit 1
+            echo "❌ TG推送失败，请检查：1.TG_BOT_TOKEN是否正确 2.TG_CHAT_ID是否正确 3.机器人是否有权限发送消息"
+            exit 1  # 退出并标记步骤失败（方便Actions日志识别）
           fi
