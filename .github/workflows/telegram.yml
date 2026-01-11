@@ -1,64 +1,86 @@
 # ==============================================================================
-# 【独立可复用】TG消息推送模板（跨仓库调用专用）
-# 作用：所有需要TG通知的仓库可直接调用此模板，无需重复编写推送逻辑
-# 适用：GitHub Actions 可复用工作流（workflow_call）
+# 【通用可复用模板】Telegram 消息推送（统一配置版）
+# 功能：所有项目可调用此模板发送 TG 通知，TG 密钥统一存储在模板仓库
+# 适用场景：多 Fork 仓库同步结果通知、任务执行结果通知等
+# 维护者：你的 GitHub 用户名
+# 最后更新：2026-01-11
 # ==============================================================================
-name: Reusable Notify - Telegram
+name: Reusable - Telegram Notify (Unified Config)
 
 # 定义为可复用工作流，允许其他仓库跨仓库调用
 on:
   workflow_call:
-    # 【外部调用时必须传入的参数】标题+内容（支持Markdown）
+    # 【外部调用必填参数】仅需传递通知内容，无需传递 TG 密钥
     inputs:
       notify_title:
-        description: 'TG推送消息的标题（会自动加粗）'
-        required: true  # 必填项，调用时必须传值
+        description: 'TG消息标题（自动加粗，建议包含任务类型+状态）'
+        required: true
         type: string
       notify_content:
-        description: 'TG推送消息的正文（支持TG的Markdown子集）'
-        required: true  # 必填项，调用时必须传值
+        description: 'TG消息正文（支持TG Markdown子集：*加粗*、[链接](url)等）'
+        required: true
         type: string
-    # 【外部调用时需要传递的密钥】TG机器人配置（模板仓库无需存储，由调用方传递）
-    secrets:
-      TG_BOT_TOKEN:
-        description: 'TG机器人的唯一标识（从@BotFather获取）'
-        required: true  # 必填密钥，调用方需从自己仓库的Secrets传递
-      TG_CHAT_ID:
-        description: '接收消息的TG聊天ID（个人/群组ID，从@userinfobot获取）'
-        required: true  # 必填密钥，调用方需从自己仓库的Secrets传递
-      PAT_TOKEN:
-        description: '仅私有模板仓库需要，用于拉取模板（公开仓库可留空）'
-        required: false # 可选，非必需
+    # 【可选】非敏感通用配置（可通过Variables配置，无需每次传递）
+    variables:
+      MSG_TIMEZONE:
+        description: '消息时间时区偏移（默认+8小时，对应北京时间）'
+        required: false
+        default: '+8 hour'
 
-# 【最小权限原则】仅授予读取权限，避免权限过大
+# 【最小权限原则】仅授予读取权限，避免权限过大导致安全风险
 permissions:
-  contents: read  # 仅读取仓库内容，无写入/修改权限
+  contents: read  # 读取仓库基础信息
+  actions: read   # 读取工作流基础信息
 
 jobs:
-  # 唯一任务：发送TG消息
-  send-telegram-notify:
-    name: Send Notification to Telegram
-    runs-on: ubuntu-latest  # 使用Ubuntu最新版运行环境
+  # 核心任务：发送 TG 消息
+  send-telegram-notification:
+    name: Send Message to Telegram
+    runs-on: ubuntu-latest
+    # 容错：仅当 TG 密钥存在时执行，避免空值报错
+    if: ${{ secrets.TG_BOT_TOKEN != '' && secrets.TG_CHAT_ID != '' }}
     steps:
-      # 步骤1：调用TG Bot API发送Markdown格式消息
-      - name: Send TG Message
-        # 前置判断：仅当密钥都配置时才执行推送（避免空值报错）
-        if: ${{ secrets.TG_BOT_TOKEN != '' && secrets.TG_CHAT_ID != '' }}
+      - name: Validate TG Config
         run: |
-          # 调用TG官方API，POST请求发送消息
-          curl -X POST "https://api.telegram.org/bot${{ secrets.TG_BOT_TOKEN }}/sendMessage" \
-          -H "Content-Type: application/json" \  # 指定请求体为JSON格式
-          -d '{
-            "chat_id": "${{ secrets.TG_CHAT_ID }}",  # 接收消息的聊天ID
-            "text": "*${{ inputs.notify_title }}*\n\n${{ inputs.notify_content }}",  # 消息内容（标题加粗+换行分隔正文）
-            "parse_mode": "Markdown",  # 启用TG的Markdown格式（支持*加粗*、[链接]()等）
-            "disable_web_page_preview": true  # 禁用链接的网页预览（避免消息杂乱）
-          }'
-          
-          # 步骤2：检查推送结果，输出日志并处理错误
-          if [ $? -eq 0 ]; then  # $? 是上一条命令的执行状态（0=成功，非0=失败）
-            echo "✅ TG推送成功"
-          else
-            echo "❌ TG推送失败，请检查：1.TG_BOT_TOKEN是否正确 2.TG_CHAT_ID是否正确 3.机器人是否有权限发送消息"
-            exit 1  # 退出并标记步骤失败（方便Actions日志识别）
+          # 验证 TG 密钥是否有效（仅检查长度，不泄露敏感信息）
+          if [ ${#TG_BOT_TOKEN} -lt 10 ]; then
+            echo "❌ TG_BOT_TOKEN 配置无效（长度过短）"
+            exit 1
           fi
+          if ! [[ $TG_CHAT_ID =~ ^[0-9]+$ ]]; then
+            echo "❌ TG_CHAT_ID 配置无效（非纯数字）"
+            exit 1
+          fi
+          echo "✅ TG 配置验证通过"
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+
+      - name: Call Telegram Bot API
+        run: |
+          # 构造带时区的时间戳
+          CURRENT_TIME=$(date +'%Y-%m-%d %H:%M:%S' --date='${{ vars.MSG_TIMEZONE }}')
+          
+          # 调用 TG 官方 API 发送消息
+          RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${{ secrets.TG_BOT_TOKEN }}/sendMessage" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "chat_id": "${{ secrets.TG_CHAT_ID }}",
+            "text": "*${{ inputs.notify_title }}*\n\n${{ inputs.notify_content }}\n\n📅 通知时间：'"$CURRENT_TIME"'",
+            "parse_mode": "Markdown",          # 启用Markdown格式
+            "disable_web_page_preview": true,  # 禁用链接网页预览（避免消息杂乱）
+            "disable_notification": false      # 启用消息提醒（手机端震动/铃声）
+          }')
+          
+          # 解析 API 响应，输出详细日志（便于排查问题）
+          echo "📜 TG API 响应：$RESPONSE"
+          if echo "$RESPONSE" | grep -q '"ok":true'; then
+            echo "✅ TG 消息推送成功"
+          else
+            echo "❌ TG 消息推送失败，响应详情：$RESPONSE"
+            exit 1
+          fi
+        env:
+          # 传递密钥到环境变量（仅当前步骤可见，安全隔离）
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
